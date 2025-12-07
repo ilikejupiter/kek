@@ -1,0 +1,104 @@
+name: VPS Ubuntu Setup (Python Only)
+
+on:
+  workflow_dispatch:  # Trigger manual
+
+jobs:
+  secure-vps:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 jam
+
+    steps:
+      - name: Update & Install Base Packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openssh-server python3 python3-pip
+
+      - name: Create SSH User
+        # PERINGATAN: Hardcode password tidak aman, sebaiknya pakai GitHub Secrets
+        run: |
+          USERNAME="vps"
+          PASSWORD="Igede123456@"  # sama seperti workflow RDP
+
+          if id "$USERNAME" &>/dev/null; then
+            sudo userdel -r "$USERNAME" || true
+          fi
+
+          sudo useradd -m -s /bin/bash "$USERNAME"
+          echo "${USERNAME}:${PASSWORD}" | sudo chpasswd
+          sudo usermod -aG sudo "$USERNAME"
+
+          echo "SSH_USERNAME=$USERNAME" >> $GITHUB_ENV
+          echo "SSH_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+
+      - name: Configure SSH Daemon
+        run: |
+          # Aktifkan password authentication
+          sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
+          sudo sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+
+          # Pastikan SSH jalan dan auto-start
+          sudo systemctl enable ssh
+          sudo systemctl restart ssh
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Establish Tailscale Connection
+        env:
+          TAILSCALE_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          HOSTNAME="gh-vps-${GITHUB_RUN_ID}"
+
+          # Up Tailscale
+          sudo tailscale up --authkey="${TAILSCALE_AUTH_KEY}" --hostname="${HOSTNAME}" --accept-routes
+
+          TS_IP=$(tailscale ip -4 | head -n 1)
+
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+          echo "VPS_HOSTNAME=$HOSTNAME" >> $GITHUB_ENV
+
+      - name: Verify SSH Accessibility (via Tailscale)
+        run: |
+          echo "Tes koneksi ke port 22 VPS (via Tailscale)..."
+          nc -vz "$TAILSCALE_IP" 22 || echo "Peringatan: tes netcat gagal, cek manual dari client."
+
+      - name: Display Connection Information
+        run: |
+          BORDER="$(printf '=%.0s' {1..60})"
+          echo ""
+          echo "$BORDER"
+          echo "           INFORMASI AKSES VPS UBUNTU (PYTHON ONLY)"
+          echo "$BORDER"
+          echo "  Address (IP)   : $TAILSCALE_IP"
+          echo "  Hostname       : $VPS_HOSTNAME"
+          echo "  Username       : $SSH_USERNAME"
+          echo "  Password       : $SSH_PASSWORD"
+          echo "  SSH Command    : ssh $SSH_USERNAME@$TAILSCALE_IP"
+          echo "$BORDER"
+          echo "  SOFTWARE SIAP PAKAI:"
+          echo "  - Python 3 (python3, pip3)"
+          echo "$BORDER"
+          echo "  PENTING: JANGAN TUTUP JOB GITHUB ACTIONS INI."
+          echo "  Biarkan workflow tetap berjalan untuk menjaga sesi."
+          echo "  Stop workflow jika sudah selesai."
+          echo "$BORDER"
+          echo ""
+
+      - name: Maintain Active Connection (Keep-Alive)
+        run: |
+          COUNTER=0
+          while true; do
+            COUNTER=$((COUNTER+1))
+            NOW=$(date +"%Y-%m-%d %H:%M:%S")
+            echo "[$NOW] VPS Ubuntu aktif - Siklus: $COUNTER"
+            echo " ↳ IP: $TAILSCALE_IP | User: $SSH_USERNAME"
+            if [ $((COUNTER % 3)) -eq 0 ]; then
+              echo " ↳ Memeriksa status Tailscale..."
+              tailscale status || true
+            fi
+            # Interval keep-alive (5 menit)
+            sleep 300
+          done
