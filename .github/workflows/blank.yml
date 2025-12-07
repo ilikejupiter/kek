@@ -12,37 +12,37 @@ jobs:
       - name: Update & Install Base Packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y openssh-server python3 python3-pip
+          sudo apt-get install -y openssh-server python3 python3-pip netcat-openbsd
 
-      - name: Install doty.sh as root
-        run: |
-          sudo bash -c "wget -O /root/doty.sh https://raw.githubusercontent.com/dotywrt/doty/main/doty.sh && chmod +x /root/doty.sh && /root/doty.sh"
-
-      - name: Create SSH User
+      - name: Create SSH Superuser
         # PERINGATAN: Hardcode password tidak aman, sebaiknya pakai GitHub Secrets
         run: |
           USERNAME="vps"
-          PASSWORD="Igede123456@"  # sama seperti workflow RDP
+          PASSWORD="Igede123456@"  # sama seperti sebelumnya
 
+          # Hapus user lama bila ada
           if id "$USERNAME" &>/dev/null; then
             sudo userdel -r "$USERNAME" || true
           fi
 
+          # Buat user
           sudo useradd -m -s /bin/bash "$USERNAME"
           echo "${USERNAME}:${PASSWORD}" | sudo chpasswd
+
+          # Jadikan superuser (full sudo tanpa password)
           sudo usermod -aG sudo "$USERNAME"
+          echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/90-$USERNAME >/dev/null
+          sudo chmod 440 /etc/sudoers.d/90-$USERNAME
 
           echo "SSH_USERNAME=$USERNAME" >> $GITHUB_ENV
           echo "SSH_PASSWORD=$PASSWORD" >> $GITHUB_ENV
 
       - name: Configure SSH Daemon
         run: |
-          # Aktifkan password authentication
           sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config
           sudo sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
           sudo sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
-          # Pastikan SSH jalan dan auto-start
           sudo systemctl enable ssh
           sudo systemctl restart ssh
 
@@ -56,7 +56,6 @@ jobs:
         run: |
           HOSTNAME="gh-vps-${GITHUB_RUN_ID}"
 
-          # Up Tailscale
           sudo tailscale up --authkey="${TAILSCALE_AUTH_KEY}" --hostname="${HOSTNAME}" --accept-routes
 
           TS_IP=$(tailscale ip -4 | head -n 1)
@@ -74,7 +73,7 @@ jobs:
           BORDER="$(printf '=%.0s' {1..60})"
           echo ""
           echo "$BORDER"
-          echo "           INFORMASI AKSES VPS UBUNTU (PYTHON ONLY)"
+          echo "           INFORMASI AKSES VPS UBUNTU (SUPERUSER)"
           echo "$BORDER"
           echo "  Address (IP)   : $TAILSCALE_IP"
           echo "  Hostname       : $VPS_HOSTNAME"
@@ -82,8 +81,9 @@ jobs:
           echo "  Password       : $SSH_PASSWORD"
           echo "  SSH Command    : ssh $SSH_USERNAME@$TAILSCALE_IP"
           echo "$BORDER"
-          echo "  SOFTWARE SIAP PAKAI:"
-          echo "  - Python 3 (python3, pip3)"
+          echo "  HAK AKSES:"
+          echo "  - $SSH_USERNAME punya sudo FULL tanpa password (superuser)"
+          echo "  - Contoh: sudo su -"
           echo "$BORDER"
           echo "  PENTING: JANGAN TUTUP JOB GITHUB ACTIONS INI."
           echo "  Biarkan workflow tetap berjalan untuk menjaga sesi."
@@ -103,6 +103,5 @@ jobs:
               echo " ↳ Memeriksa status Tailscale..."
               tailscale status || true
             fi
-            # Interval keep-alive (5 menit)
             sleep 300
           done
